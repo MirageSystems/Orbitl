@@ -16,11 +16,47 @@ export function copyToClipboard(text: string): Promise<void> {
 
 export function formatBalance(balance: string | number, decimals = 4): string {
   const num = typeof balance === "string" ? parseFloat(balance) : balance;
-  if (isNaN(num)) return "0";
   
-  if (num < 0.0001 && num > 0) {
-    return "< 0.0001";
+  // Validate input
+  if (!isFinite(num) || isNaN(num) || num < 0) return "0";
+  
+  // Handle very small positive amounts
+  const threshold = Math.pow(10, -decimals);
+  if (num < threshold && num > 0) {
+    return `< ${threshold.toFixed(decimals)}`;
   }
   
-  return num.toFixed(decimals).replace(/\.?0+$/, "");
+  // Format with specified decimals, remove trailing zeros
+  return new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: decimals,
+  }).format(num);
+}
+
+export function isValidSeiAddress(address: string): boolean {
+  if (!address?.trim()) return false;
+  const seiAddressRegex = /^0x[a-fA-F0-9]{40}$/;
+  return seiAddressRegex.test(address.trim());
+}
+
+export function isValidEmailWalletFormat(input: string): boolean {
+  if (!input?.trim()) return false;
+  const emailWalletRegex = /^email:.+@.+\..+:(sei-wallet|smartwallet)$/;
+  return emailWalletRegex.test(input.trim());
+}
+
+export function isValidRecipient(recipient: string): boolean {
+  return isValidSeiAddress(recipient) || isValidEmailWalletFormat(recipient);
+}
+
+export function isValidAmount(amount: string): boolean {
+  if (!amount?.trim()) return false;
+  const amountRegex = /^[0-9]*\.?[0-9]{0,6}$/;
+  if (!amountRegex.test(amount.trim())) return false;
+  const num = parseFloat(amount.trim());
+  return isFinite(num) && num > 0;
+}
+
+export function sanitizeInput(input: string): string {
+  return input.trim().replace(/[^\w\s@.:]/g, '');
 }

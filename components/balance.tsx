@@ -133,8 +133,8 @@ export function Balance() {
       <div className="space-y-2 text-sm">
         {balances.nativeToken && (
           <div className="flex justify-between items-center p-2 bg-gray-50 rounded">
-            <span className="font-medium">SEI</span>
-            <span>{formatBalance(balances.nativeToken.amount)} {balances.nativeToken.symbol}</span>
+            <span className="font-medium">ETH</span>
+            <span>{formatBalance(balances.nativeToken.amount)} {balances.nativeToken.symbol.toUpperCase()}</span>
           </div>
         )}
         
