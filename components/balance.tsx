@@ -3,18 +3,7 @@
 import { useWallet } from "@crossmint/client-sdk-react-ui";
 import { useEffect, useState, useCallback } from "react";
 import { formatBalance, cn } from "@/lib/utils";
-
-interface TokenBalance {
-  amount: string;
-  symbol: string;
-  decimals?: number;
-}
-
-interface WalletBalances {
-  nativeToken?: TokenBalance;
-  usdc?: TokenBalance;
-  tokens?: TokenBalance[];
-}
+import { WalletBalances } from "@/lib/types";
 
 export function Balance() {
   const { wallet, status } = useWallet();
@@ -29,8 +18,40 @@ export function Balance() {
     setError(null);
     
     try {
-      const balanceData = await wallet.balances(["USDC"]);
-      setBalances(balanceData);
+      const response = await fetch(`/api/wallet/balance?walletLocator=${wallet.address}`);
+      
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+      
+      const apiTokens = await response.json();
+      
+      // Convert API response to WalletBalances format
+      const walletBalances: WalletBalances = {
+        tokens: []
+      };
+      
+      if (Array.isArray(apiTokens)) {
+        apiTokens.forEach((token: { amount: string; symbol: string; decimals?: number }) => {
+          if (token.amount && parseFloat(token.amount) > 0) {
+            const tokenBalance = {
+              amount: token.amount,
+              symbol: token.symbol,
+              decimals: token.decimals
+            };
+            
+            if (token.symbol.toLowerCase() === 'sei') {
+              walletBalances.nativeToken = { ...tokenBalance, name: 'SEI' };
+            } else if (token.symbol.toLowerCase() === 'usdc') {
+              walletBalances.usdc = tokenBalance;
+            } else {
+              walletBalances.tokens?.push(tokenBalance);
+            }
+          }
+        });
+      }
+      
+      setBalances(walletBalances);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to fetch balances";
       setError(errorMessage);
@@ -133,7 +154,7 @@ export function Balance() {
       <div className="space-y-2 text-sm">
         {balances.nativeToken && (
           <div className="flex justify-between items-center p-2 bg-gray-50 rounded">
-            <span className="font-medium">ETH</span>
+            <span className="font-medium">{balances.nativeToken.name || balances.nativeToken.symbol.toUpperCase()}</span>
             <span>{formatBalance(balances.nativeToken.amount)} {balances.nativeToken.symbol.toUpperCase()}</span>
           </div>
         )}

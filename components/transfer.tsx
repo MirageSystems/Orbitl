@@ -1,12 +1,13 @@
 "use client";
 
 import { useWallet } from "@crossmint/client-sdk-react-ui";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { isValidRecipient, isValidAmount } from "@/lib/utils";
 
-interface TransferResult {
-  hash: string;
-  explorerLink: string;
+interface ComponentTokenBalance {
+  symbol: string;
+  name: string;
+  amount: string;
 }
 
 export function Transfer() {
@@ -18,12 +19,14 @@ export function Transfer() {
   const [explorerLink, setExplorerLink] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
+  const [selectedToken, setSelectedToken] = useState("");
+  const [availableTokens, setAvailableTokens] = useState<ComponentTokenBalance[]>([]);
 
   const handleTransfer = useCallback(async () => {
     if (!wallet || !recipient || !amount) return;
     
     if (!isValidRecipient(recipient)) {
-      setError("Please enter a valid ETH address (0x format) or email format");
+      setError("Please enter a valid address (0x format) or email format");
       return;
     }
     
@@ -39,23 +42,62 @@ export function Transfer() {
     
     setIsLoading(true);
     try {
-      // Check balance first
-      const balanceData = await wallet.balances();
-      console.log("Available balances:", balanceData);
-      
-      // Validate sufficient balance
-      const nativeBalance = balanceData.nativeToken?.amount;
-      const amountNum = parseFloat(amount.trim());
-      
-      if (!nativeBalance || parseFloat(nativeBalance) < amountNum) {
-        throw new Error("Insufficient balance to complete the transfer.");
+      if (!selectedToken) {
+        throw new Error("Please select a token to transfer.");
       }
       
-      // SEI Atlantic 2 Testnet uses ETH as native token
-      const result: TransferResult = await wallet.send(recipient.trim(), "eth", amount.trim());
+      const selectedTokenData = availableTokens.find(t => t.symbol === selectedToken);
+      const amountNum = parseFloat(amount.trim());
+      const tokenBalance = selectedTokenData ? parseFloat(selectedTokenData.amount) : 0;
       
-      setTxHash(result.hash);
-      setExplorerLink(result.explorerLink);
+      if (tokenBalance < amountNum) {
+        throw new Error(`Insufficient ${selectedToken.toUpperCase()} balance. Available: ${tokenBalance}, Required: ${amountNum}`);
+      }
+      
+      // Get wallet address for API call
+      const walletAddress = wallet.address;
+      
+      // Create proper token locator for API
+      const tokenSymbol = selectedToken.toLowerCase();
+      let tokenLocator: string;
+      
+      if (tokenSymbol === 'sei') {
+        tokenLocator = 'sei-atlantic-2-testnet:sei';
+      } else if (tokenSymbol === 'eth') {
+        tokenLocator = 'sei-atlantic-2-testnet:eth';
+      } else if (tokenSymbol === 'usdc') {
+        tokenLocator = 'sei-atlantic-2-testnet:usdc';
+      } else if (tokenSymbol === 'usdt') {
+        tokenLocator = 'sei-atlantic-2-testnet:usdt';
+      } else {
+        tokenLocator = `sei-atlantic-2-testnet:${tokenSymbol}`;
+      }
+      
+      console.log(`Attempting transfer via API: ${amount} ${tokenLocator} to ${recipient}`);
+      
+      // Call our Next.js API endpoint
+      const response = await fetch('/api/wallet/transfer', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          walletLocator: walletAddress,
+          tokenLocator: tokenLocator,
+          recipient: recipient.trim(),
+          amount: amount.trim()
+        })
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Transfer failed');
+      }
+      
+      // Extract transaction info from Crossmint API response
+      setTxHash(result.onChain?.txId || result.id);
+      setExplorerLink(result.onChain?.explorerLink || '');
       setSuccess(true);
       
       setRecipient("");
@@ -63,14 +105,19 @@ export function Transfer() {
     } catch (error) {
       console.error("Transfer failed:", error);
       
-      // Enhanced error handling for debugging
       if (error instanceof Error) {
         if (error.message.includes("insufficient balance")) {
           setError("Insufficient balance to complete the transfer.");
+        } else if (error.message.includes("Invalid token address or currency symbol")) {
+          setError("Invalid token format. Please try again or contact support if the issue persists.");
         } else if (error.message.includes("Invalid") && error.message.includes("address")) {
           setError("Invalid recipient address format. Please check the address.");
-        } else if (error.message.includes("reverted")) {
-          setError("Transaction failed. Please ensure you have sufficient ETH testnet tokens. You can get them from the SEI Atlantic 2 faucet.");
+        } else if (error.message.includes("reverted") || error.message.includes("execution_reverted")) {
+          setError("Transaction reverted. This usually means insufficient balance, invalid address, or network issues. Please verify your recipient address and amount.");
+        } else if (error.message.includes("build_failed")) {
+          setError("Transaction failed to build. Please check your inputs and try again.");
+        } else if (error.message.includes("sanctioned_wallet_address")) {
+          setError("Cannot transfer to this address due to compliance restrictions.");
         } else {
           setError(`Transfer failed: ${error.message}`);
         }
@@ -80,7 +127,52 @@ export function Transfer() {
     } finally {
       setIsLoading(false);
     }
-  }, [wallet, recipient, amount]);
+  }, [wallet, recipient, amount, selectedToken, availableTokens]);
+
+  // Load tokens using our API
+  useEffect(() => {
+    const loadTokens = async () => {
+      if (!wallet || status !== "loaded") return;
+      
+      try {
+        console.log('🔍 Loading tokens via API...');
+        const response = await fetch(`/api/wallet/balance?walletLocator=${wallet.address}`);
+        
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status}`);
+        }
+        
+        const apiTokens = await response.json();
+        console.log('✅ Received tokens from API:', apiTokens);
+        
+        const tokens: ComponentTokenBalance[] = [];
+        
+        // Process API response and extract tokens with balance > 0
+        if (Array.isArray(apiTokens)) {
+          apiTokens.forEach((tokenData: { amount: string; symbol: string }) => {
+            if (tokenData.amount && parseFloat(tokenData.amount) > 0) {
+              tokens.push({
+                symbol: tokenData.symbol,
+                name: tokenData.symbol.toUpperCase(),
+                amount: tokenData.amount
+              });
+            }
+          });
+        }
+        
+        console.log('🎯 Processed tokens:', tokens);
+        setAvailableTokens(tokens);
+        
+        if (tokens.length > 0 && !selectedToken) {
+          setSelectedToken(tokens[0].symbol);
+        }
+      } catch (error) {
+        console.error("❌ Failed to load tokens via API:", error);
+      }
+    };
+    
+    loadTokens();
+  }, [wallet, status, selectedToken]);
 
   const handleAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -106,15 +198,14 @@ export function Transfer() {
   return (
     <div className="space-y-3 p-4 border rounded">
       <div className="flex items-center justify-between">
-        <h3 className="font-medium">Transfer ETH</h3>
+        <h3 className="font-medium">Transfer Tokens</h3>
         <div className="text-xs text-gray-500">
           Testnet
         </div>
       </div>
       
-      {/* Testnet info */}
       <div className="text-xs text-blue-600 bg-blue-50 p-2 rounded">
-        💧 Need testnet ETH? Get free tokens from{" "}
+        💧 Need testnet tokens? Get free ETH/tokens from{" "}
         <a 
           href="https://docs.sei.io/learn/faucet" 
           target="_blank" 
@@ -142,9 +233,30 @@ export function Transfer() {
         />
       </div>
       
+      {availableTokens.length > 0 && (
+        <div className="space-y-2">
+          <label htmlFor="token" className="block text-sm text-gray-600">
+            Token to Send
+          </label>
+          <select
+            id="token"
+            value={selectedToken}
+            onChange={(e) => setSelectedToken(e.target.value)}
+            className="w-full p-2 border rounded text-sm"
+            disabled={isLoading}
+          >
+            {availableTokens.map((token) => (
+              <option key={token.symbol} value={token.symbol}>
+                {token.symbol.toUpperCase()} - {token.amount} available
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      
       <div className="space-y-2">
         <label htmlFor="amount" className="block text-sm text-gray-600">
-          Amount (ETH)
+          Amount
         </label>
         <input
           id="amount"
@@ -186,7 +298,7 @@ export function Transfer() {
       
       <button
         onClick={handleTransfer}
-        disabled={isLoading || !isValidRecipient(recipient) || !isValidAmount(amount)}
+        disabled={isLoading || !isValidRecipient(recipient) || !isValidAmount(amount) || !selectedToken}
         className="w-full py-2 px-4 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         {isLoading ? (
@@ -198,7 +310,7 @@ export function Transfer() {
             Sending...
           </span>
         ) : (
-          "Send ETH"
+          `Send ${selectedToken ? selectedToken.toUpperCase() : 'Tokens'}`
         )}
       </button>
     </div>
